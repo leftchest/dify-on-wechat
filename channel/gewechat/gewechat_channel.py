@@ -1,5 +1,7 @@
 import os
 import time
+import re  # 导入正则表达式模块，用于段落分割
+import random  # 导入 random 模块，用于生成随机延迟
 import json
 import web
 from urllib.parse import urlparse
@@ -70,7 +72,7 @@ class GeWeChatChannel(ChatChannel):
             logger.info(f"[gewechat] new app_id saved: {app_id}")
             self.app_id = app_id
 
-        # 获取回调地址，示例地址：http://172.17.0.1:9919/v2/api/callback/collect  
+        # 获取回调地址，示例地址：http://172.17.0.1:9919/v2/api/callback/collect
         callback_url = conf().get("gewechat_callback_url")
         if not callback_url:
             logger.error("[gewechat] callback_url is not set, unable to start callback server")
@@ -94,7 +96,7 @@ class GeWeChatChannel(ChatChannel):
         callback_thread = threading.Thread(target=set_callback, daemon=True)
         callback_thread.start()
 
-        # 从回调地址中解析出端口与url path，启动回调服务器  
+        # 从回调地址中解析出端口与url path，启动回调服务器
         parsed_url = urlparse(callback_url)
         path = parsed_url.path
         # 如果没有指定端口，使用默认端口80
@@ -109,11 +111,26 @@ class GeWeChatChannel(ChatChannel):
         gewechat_message = context.get("msg")
         if reply.type in [ReplyType.TEXT, ReplyType.ERROR, ReplyType.INFO]:
             reply_text = reply.content
-            ats = ""
-            if gewechat_message and gewechat_message.is_group:
-                ats = gewechat_message.actual_user_id
-            self.client.post_text(self.app_id, receiver, reply_text, ats)
-            logger.info("[gewechat] Do send text to {}: {}".format(receiver, reply_text))
+            # 从配置文件读取no_need_at配置，如果为True且是群聊，则移除@
+            no_need_at = conf().get("no_need_at", False)
+            if no_need_at and gewechat_message and gewechat_message.is_group:
+                logger.debug(f"[gewechat] no_need_at is True, will remove @{context.get('msg').actual_user_nickname}")
+                reply_text = re.sub(r'@' + context.get('msg').actual_user_nickname + r'\s?', '', reply_text, count=1)
+
+            #  通过 //n 进行段落分割并过滤符号
+            split_punctuation = ['//n']
+            pattern = r'[，。！？；：、,\.!\?;:]*\s*//n\s*[，。！？；：、,\.!\?;:]*'  # 定义过滤分隔符及前后标点
+            split_messages = re.split(pattern, reply_text)
+            # 移除空行
+            split_messages = [msg.strip() for msg in split_messages if msg.strip() != '']
+
+            for i, msg in enumerate(split_messages):
+                self.client.post_text(self.app_id, receiver, msg, "")
+                logger.info("[gewechat] Do send text to {}: {}".format(receiver, msg))
+                # 如果不是最后一段消息，则延时 3 到 8 秒之间的随机时间
+                if i < len(split_messages) - 1:
+                    delay = random.uniform(3.0, 8.0)  # 生成 3 到 8 之间的随机浮点数
+                    time.sleep(delay)  # 添加随机延时
         elif reply.type == ReplyType.VOICE:
             try:
                 content = reply.content
@@ -124,7 +141,7 @@ class GeWeChatChannel(ChatChannel):
                     callback_url = conf().get("gewechat_callback_url")
                     silk_url = callback_url + "?file=" + silk_path
                     self.client.post_voice(self.app_id, receiver, silk_url, duration)
-                    logger.info(f"[gewechat] Do send voice to {receiver}: {silk_url}, duration: {duration/1000.0} seconds")
+                    logger.info(f"[gewechat] Do send voice to {receiver}: {silk_url}, duration: {duration / 1000.0} seconds")
                     return
                 else:
                     logger.error(f"[gewechat] voice file is not mp3, path: {content}, only support mp3")
@@ -176,14 +193,14 @@ class Query:
         channel = GeWeChatChannel()
         data = json.loads(web.data())
         logger.debug("[gewechat] receive data: {}".format(data))
-        
+
         # gewechat服务发送的回调测试消息
         if isinstance(data, dict) and 'testMsg' in data and 'token' in data:
             logger.debug(f"[gewechat] 收到gewechat服务发送的回调测试消息")
             return "success"
 
         gewechat_msg = GeWeChatMessage(data, channel.client)
-        
+
         # 微信客户端的状态同步消息
         if gewechat_msg.ctype == ContextType.STATUS_SYNC:
             logger.debug(f"[gewechat] ignore status sync message: {gewechat_msg.content}")
@@ -200,7 +217,7 @@ class Query:
             return "success"
 
         # 忽略过期的消息
-        if int(gewechat_msg.create_time) < int(time.time()) - 60 * 5: # 跳过5分钟前的历史消息
+        if int(gewechat_msg.create_time) < int(time.time()) - 60 * 5:  # 跳过5分钟前的历史消息
             logger.debug(f"[gewechat] ignore expired message from {gewechat_msg.actual_user_id}: {gewechat_msg.content}")
             return "success"
 
