@@ -144,21 +144,30 @@ class PluginManager:
             if plugincls.enabled:
                 if 'GODCMD' in self.instances and name == 'GODCMD':
                     continue
-                # if name not in self.instances:
                 try:
+                    # 创建新实例
                     instance = plugincls()
+                    # 如果是重载的情况，需要先清理旧的事件监听
+                    if name in self.instances:
+                        # 清理旧实例的事件监听
+                        for event in self.listening_plugins:
+                            if name in self.listening_plugins[event]:
+                                self.listening_plugins[event].remove(name)
+                        # 清理旧实例的handlers
+                        self.instances[name].handlers.clear()
+                    # 保存新实例
+                    self.instances[name] = instance
+                    # 重新注册事件监听
+                    for event in instance.handlers:
+                        if event not in self.listening_plugins:
+                            self.listening_plugins[event] = []
+                        if name not in self.listening_plugins[event]:
+                            self.listening_plugins[event].append(name)
                 except Exception as e:
                     logger.warn("Failed to init %s, diabled. %s" % (name, e))
                     self.disable_plugin(name)
                     failed_plugins.append(name)
                     continue
-                if name in self.instances:
-                    self.instances[name].handlers.clear()
-                self.instances[name] = instance
-                for event in instance.handlers:
-                    if event not in self.listening_plugins:
-                        self.listening_plugins[event] = []
-                    self.listening_plugins[event].append(name)
         self.refresh_order()
         return failed_plugins
 
